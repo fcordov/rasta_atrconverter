@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rasta ATR/XEX Converter – pictures to Atari 800XL</title>
+<style>
+:root{color-scheme:dark;--bg:#14161a;--fg:#e8e6e1;--mut:#9a9890;--ac:#ff9a3c;--card:#1e2126;--bd:#343841}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;padding:24px;max-width:1000px;margin-inline:auto}
+h1{font-size:22px;margin:0 0 4px}p.s{color:var(--mut);margin:0 0 18px}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:38px 16px;text-align:center;cursor:pointer;color:var(--mut)}
+#drop.on,#drop:hover{border-color:var(--ac);color:var(--fg)}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:16px 0}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mut)}label b{color:var(--fg);font-weight:500}
+input[type=range]{width:100%;accent-color:var(--ac)}select,button,a.b{background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:7px 10px;font:inherit;cursor:pointer;text-decoration:none}
+button:hover,a.b:hover{border-color:var(--ac)}
+#out{display:grid;gap:14px}.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;display:grid;gap:8px}
+.card canvas{width:100%;max-width:640px;aspect-ratio:320/192;image-rendering:pixelated;background:#000;border-radius:6px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.mut{color:var(--mut);font-size:13px}
+progress{width:200px;accent-color:var(--ac)}
+</style></head><body>
+<h1>Rasta ATR Converter</h1>
+<p class="s">Drop pictures to get bootable Atari 800XL disk images (.atr) or executables (.xex): ANTIC mode E, 160×192, four colours that are re-chosen for every scanline from the 128-colour Atari palette. Everything runs in your browser.</p>
+<div id="drop">Drop pictures here, or click to choose<input id="f" type="file" accept="image/*" multiple hidden></div>
+<div class="opts">
+<label>Picture fit<select id="fit"><option value="cover">Cover (crop)</option><option value="contain">Contain (black bars)</option><option value="stretch">Stretch</option></select></label>
+<label><span>Dither strength <b id="v1">1.0</b></span><input id="dith" type="range" min="0" max="2" step=".1" value="1"></label>
+<label><span>Evaluations (total) <b id="v2"></b></span><input id="eff" type="range" min="0" max="100" step="1" value="50"></label>
+<label><span>Brightness <b id="v3">0</b></span><input id="br" type="range" min="-100" max="100" value="0"></label>
+<label><span>Contrast <b id="v4">0</b></span><input id="ct" type="range" min="-100" max="100" value="0"></label>
+<label><span>Saturation <b id="v5">0</b></span><input id="sa" type="range" min="-100" max="100" value="0"></label>
+</div>
+<div class="row" style="margin-bottom:14px"><button id="redo">Convert all again with these settings</button><button id="clear">Remove all</button></div>
+<div id="out"></div>
+<script>
+const $=i=>document.getElementById(i);
+const B64="AAAAHR0dPj0+X15fenp5nJubvLu73NvcNQAATxQAbjQAjlUTqXEtypJQ6rJw/tKRPwAAWQkAeCkSmEo0s2VP1Idy9KeS/8ezPQAAVwULdyUqmEZMsmFn04OJ86Op/8TKOAAnUQFAcB5fkD+Bq1uazHy87J3c/r36LABGRgFfZR59hT+foFu4wXza4Z34/L3/GQBeNAN2UyKUdEO1j1/OsIHw0KH+8ML/AABcCRh1KTiTSlm0ZnTNh5bvqLb+yNb/AAtFACVdGEV8OWadVoG2d6LZmMP3uOP/ABYlADE/DFFeLnKASo2ZbK68jc7bre76ACQAAD4KCF4pKH9LRJplZbuIhtuopvrJACoAAEYAD2UAMYUTTKEtbcFRjuJxr/2SACQABUAAJl8AR4AAYpsShLw1pNxVxft3AhgAHzQAP1QAYHUAe5AKnLEsvdFN3fFuHgkAOSUAWEUAeWYAlIEStaM11sNV9uN2NAAATxUAbjUAj1YTqnEuy5JR67Nx/tOS";
+const P=Uint8Array.from(atob(B64),c=>c.charCodeAt(0)),N=128; // palette entry c = colour register value 2c
+const BY=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5].map(v=>(v+.5)/16-.5);
+const dist=(r1,g1,b1,r2,g2,b2)=>{const m=(r1+r2)/2,a=r1-r2,g=g1-g2,b=b1-b2;return a*a*(2+m/256)+4*g*g+b*b*(2.99-m/256)};
+[["dith","v1",1],["br","v3",0],["ct","v4",0],["sa","v5",0]].forEach(([i,v,d])=>$(i).oninput=()=>$(v).textContent=(+$(i).value).toFixed(d));
+const tot=()=>+(10**(4+$("eff").value*.04)).toPrecision(3); // log scale: 10 thousand .. 100 million
+$("eff").oninput=()=>{const n=tot();$("v2").textContent=n.toLocaleString()+" (≈"+Math.round(n/192).toLocaleString()+" per scanline)"};$("eff").oninput();
+const opts=()=>({fit:$("fit").value,dith:+$("dith").value,eff:tot()/192,br:+$("br").value,ct:+$("ct").value,sa:+$("sa").value});
+const tick=()=>new Promise(r=>setTimeout(r));
+
+// 1. picture -> 160x192 RGB target (320x192 square-pixel view, pairs averaged)
+function prep(img,o){
+ const c=document.createElement("canvas");c.width=320;c.height=192;const x=c.getContext("2d",{willReadFrequently:true});
+ x.fillStyle="#000";x.fillRect(0,0,320,192);x.imageSmoothingQuality="high";
+ const w=img.naturalWidth||img.width,h=img.naturalHeight||img.height;
+ const s=o.fit=="cover"?Math.max(320/w,192/h):o.fit=="contain"?Math.min(320/w,192/h):0;
+ const dw=s?w*s:320,dh=s?h*s:192;x.drawImage(img,(320-dw)/2,(192-dh)/2,dw,dh);
+ const d=x.getImageData(0,0,320,192).data,T=new Float32Array(160*192*3);
+ const br=o.br*2.55,ct=(100+o.ct)/100,sa=1+o.sa/100;
+ for(let i=0;i<30720;i++){
+  const px=i%160,py=(i/160)|0,q=(py*320+px*2)*4,v=[0,1,2].map(k=>{let t=(d[q+k]+d[q+4+k])/2;return(t-128)*ct+128+br});
+  const g=.3*v[0]+.59*v[1]+.11*v[2];
+  for(let k=0;k<3;k++)T[i*3+k]=Math.max(0,Math.min(255,g+(v[k]-g)*sa));
+ }
+ return T;
+}
+
+// 2. per scanline: pick the best 4 palette colours (k-means start + coordinate descent), ordered dither
+async function solve(T,o,cb){
+ let ev=0;
+ const pix=new Uint8Array(30720),cols=new Uint8Array(768),D=new Float32Array(160*N),A=new Float32Array(480),M=new Float32Array(160);
+ const near=(r,g,b)=>{let bi=0,bd=1e9;for(let c=0;c<N;c++){const e=dist(r,g,b,P[c*3],P[c*3+1],P[c*3+2]);if(e<bd){bd=e;bi=c}}return bi};
+ for(let y=0;y<192;y++){
+  for(let x=0;x<160;x++){const t=BY[(y&3)*4+(x&3)]*o.dith*96;for(let k=0;k<3;k++)A[x*3+k]=T[(y*160+x)*3+k]+t}
+  for(let x=0;x<160;x++)for(let c=0;c<N;c++)D[x*N+c]=dist(A[x*3],A[x*3+1],A[x*3+2],P[c*3],P[c*3+1],P[c*3+2]);
+  let le=0; // evaluations used on this line (one evaluation = one candidate colour tried in a slot)
+  const total=S=>{let e=0;for(let x=0;x<160;x++){const q=x*N;e+=Math.min(D[q+S[0]],D[q+S[1]],D[q+S[2]],D[q+S[3]])}return e};
+  const descend=S=>{
+   let best=total(S);
+   for(let pass=0;pass<8;pass++){let imp=false;
+    for(let s=0;s<4;s++){
+     for(let x=0;x<160;x++){let m=1e12;for(let k=0;k<4;k++)if(k!=s)m=Math.min(m,D[x*N+S[k]]);M[x]=m}
+     let bc=S[s],be=1e18;
+     for(let c=0;c<N;c++){let e=0;for(let x=0;x<160;x++)e+=Math.min(M[x],D[x*N+c]);if(e<be){be=e;bc=c}}
+     if(be<best-1e-6){best=be;S[s]=bc;imp=true}
+     le+=N;ev+=N;if(le>=o.eff)break;
+    }
+    if(!imp||le>=o.eff)break}
+   return best;
+  };
+  // k-means start
+  const idx=[...Array(160).keys()].sort((a,b)=>(A[a*3]+A[a*3+1]*2+A[a*3+2])-(A[b*3]+A[b*3+1]*2+A[b*3+2]));
+  let C=[20,60,100,140].map(i=>[0,1,2].map(k=>A[idx[i]*3+k]));
+  for(let it=0;it<4;it++){const sum=C.map(()=>[0,0,0,0]);
+   for(let x=0;x<160;x++){let bk=0,bd=1e18;C.forEach((c,k)=>{const e=dist(A[x*3],A[x*3+1],A[x*3+2],c[0],c[1],c[2]);if(e<bd){bd=e;bk=k}});
+    for(let k=0;k<3;k++)sum[bk][k]+=A[x*3+k];sum[bk][3]++}
+   C=C.map((c,k)=>sum[k][3]?[sum[k][0]/sum[k][3],sum[k][1]/sum[k][3],sum[k][2]/sum[k][3]]:c)}
+  let bestS=C.map(c=>near(c[0],c[1],c[2])),bestE=descend(bestS);
+  for(let r=0;le<o.eff;r++){
+   const rc=()=>{const x=(Math.random()*160)|0;return near(A[x*3],A[x*3+1],A[x*3+2])};
+   const S=r%4==0?[rc(),rc(),rc(),rc()]:bestS.slice(); // every 4th restart is fully random, the rest perturb the best set
+   if(r%4)for(let k=1+(r%3);k>0;k--)S[(Math.random()*4)|0]=rc();
+   const e=descend(S);if(e<bestE){bestE=e;bestS=S}
+  }
+  for(let x=0;x<160;x++){let bk=0,bd=1e18;for(let k=0;k<4;k++){const e=D[x*N+bestS[k]];if(e<bd){bd=e;bk=k}}pix[y*160+x]=bk}
+  for(let k=0;k<4;k++)cols[y*4+k]=bestS[k]*2;
+  cb(y+1);await tick()
+ }
+ return{pix,cols,ev};
+}
+
+// 3. bootable ATR / XEX: boot sectors load screen + per-scanline colour kernel at $0E00 and run it
+function build({pix,cols},L){
+ const DL=L+0x100,S1=L+0x210,S2=L+0x1200,K=L+0x2010,len=K-L+14+192*23+11,ns=Math.ceil(len/128),m=new Uint8Array(ns*128);
+ let p=0;const w=(...b)=>{for(const v of b)m[p++]=v};
+ w(0,ns,L&255,L>>8,(L+0x18)&255,(L+0x18)>>8); // boot header, init vector -> RTS at $0E18
+ w(0xA9,DL&255,0x8D,0x30,2,0xA9,DL>>8,0x8D,0x31,2,0xA9,0x22,0x8D,0x2F,2,0x4C,K&255,K>>8); // SDLST, SDMCTL, JMP kernel
+ m[0x18]=0x60;
+ p=DL-L; w(0x70,0x70,0x70,0x4E,S1&255,S1>>8); for(let i=0;i<101;i++)w(0x0E); w(0x4E,S2&255,S2>>8); for(let i=0;i<89;i++)w(0x0E); w(0x41,DL&255,DL>>8);
+ for(let y=0;y<192;y++){let a=(y<102?S1+y*40:S2+(y-102)*40)-L;
+  for(let x=0;x<160;x+=4){const q=y*160+x;m[a++]=pix[q]<<6|pix[q+1]<<4|pix[q+2]<<2|pix[q+3]}}
+ p=K-L;
+ w(0xA9,0,0x85,0x4D, 0xAD,0x0B,0xD4,0xC9,15,0xD0,0xF9, 0x8D,0x0A,0xD4); // clear attract; wait VCOUNT=15; WSYNC
+ for(let y=0;y<192;y++){const c=cols.subarray(y*4,y*4+4);
+  w(0xA9,c[1],0xA2,c[2],0xA0,c[3],0x8D,0x0A,0xD4,0x8D,0x16,0xD0,0x8E,0x17,0xD0,0x8C,0x18,0xD0,0xA9,c[0],0x8D,0x1A,0xD0)}
+ w(0x8D,0x0A,0xD4,0xA9,0,0x8D,0x1A,0xD0,0x4C,K&255,K>>8);
+ // (the loop jumps back to K which restarts at the attract/VCOUNT wait)
+ return{m,len,L};
+}
+function makeATR({m}){
+ const tot=Math.max(720*128,m.length),out=new Uint8Array(16+tot),par=tot/16;
+ out.set([0x96,2,par&255,(par>>8)&255,128,0,par>>16],0);out.set(m,16);return out;
+}
+
+function makeXEX({m,len,L}){ // DOS binary: one segment + RUN vector ($02E0) -> init code at L+6
+ const a=L+6,e=L+len-1,o=[0xFF,0xFF,a&255,a>>8,e&255,e>>8,...m.subarray(6,len),0xE0,2,0xE1,2,a&255,a>>8];
+ return Uint8Array.from(o);
+}
+function render(cv,{pix,cols}){
+ const x=cv.getContext("2d"),im=x.createImageData(160,192);
+ for(let i=0;i<30720;i++){const c=cols[((i/160)|0)*4+pix[i]]>>1;im.data.set([P[c*3],P[c*3+1],P[c*3+2],255],i*4)}
+ x.putImageData(im,0,0);
+}
+
+const items=[];
+function del(it){it.removed=true;it.urls.forEach(u=>URL.revokeObjectURL(u));it.img.onload=it.img.onerror=null;it.card.remove();const i=items.indexOf(it);if(i>=0)items.splice(i,1)}
+const mkDel=it=>{const b=document.createElement("button");b.textContent="✕ Remove";b.onclick=()=>del(it);return b};
+async function process(it,o){
+ if(it.removed)return;const {card}=it;card.innerHTML="";
+ const t=document.createElement("div");t.className="row";t.innerHTML=`<b></b><progress max="192" value="0"></progress>`;t.firstChild.textContent=it.name;t.append(mkDel(it));
+ const cv=document.createElement("canvas");cv.width=160;cv.height=192;card.append(t,cv);
+ const pr=t.querySelector("progress");
+ const t0=performance.now();let r;try{r=await solve(prep(it.img,o),o,y=>{if(it.removed)throw 0;pr.value=y})}catch(e){if(it.removed)return;throw e}
+ if(it.removed)return;render(cv,r);pr.remove();
+ const atr=makeATR(build(r,0xE00)),xex=makeXEX(build(r,0x3E00)),base=it.name.replace(/\.[^.]+$/,"").replace(/[^\w.-]+/g,"_");
+ const link=(d,ext)=>{const a=document.createElement("a");a.className="b";const u=URL.createObjectURL(new Blob([d],{type:"application/octet-stream"}));it.urls.push(u);a.href=u;a.download=base+ext;a.textContent="Download "+a.download;return a};
+ const a=link(atr,".atr"),a2=link(xex,".xex");
+ const used=new Set();for(const c of r.cols)used.add(c);
+ const s=document.createElement("span");s.className="mut";s.textContent=`${r.ev.toLocaleString()} evaluations in ${((performance.now()-t0)/1000).toFixed(1)} s · ${used.size} of 128 palette colours used · ATR boots on 48K+ XL/XE (hold OPTION to skip BASIC) · XEX loads at $3E00 from DOS or an emulator`;
+ const row=document.createElement("div");row.className="row";row.append(a,a2,s);card.append(row);
+}
+let busy=Promise.resolve();
+function add(files){
+ for(const f of files){
+  if(!f.type.startsWith("image/"))continue;
+  const img=new Image(),u=URL.createObjectURL(f),card=document.createElement("div");card.className="card";card.textContent="Loading "+f.name+" …";$("out").append(card);
+  const it={name:f.name,card,img,urls:[u]};items.push(it);card.append(mkDel(it));
+  img.onload=()=>{busy=busy.then(()=>process(it,opts()))};
+  img.onerror=()=>card.textContent="Could not read "+f.name;img.src=u;
+ }
+}
+$("clear").onclick=()=>[...items].forEach(del);
+$("redo").onclick=()=>{for(const it of items)busy=busy.then(()=>process(it,opts()))};
+const dz=$("drop");dz.onclick=()=>$("f").click();$("f").onchange=e=>{add(e.target.files);e.target.value=""};
+["dragenter","dragover"].forEach(n=>addEventListener(n,e=>{e.preventDefault();dz.classList.add("on")}));
+["dragleave","drop"].forEach(n=>addEventListener(n,e=>{e.preventDefault();dz.classList.remove("on")}));
+addEventListener("drop",e=>add(e.dataTransfer.files));
+</script></body></html>
